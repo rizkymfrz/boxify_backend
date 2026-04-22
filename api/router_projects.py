@@ -4,6 +4,8 @@ Boxify Backend — Projects Router
 Endpoints:
     POST /api/projects          — Create project with ZIP upload
     GET  /api/projects          — List projects for the authenticated user
+    POST /api/projects/{id}/models — Upload a YOLO .pt model
+    POST /api/projects/{id}/images/{filename}/auto-label — AI auto-labeling
 """
 
 import logging
@@ -20,6 +22,8 @@ from api.deps import get_current_user
 from api.schemas import (
     AnnotationRequest,
     AnnotationResponse,
+    AutoLabelRequest,
+    AutoLabelResponse,
     ImageItem,
     ImageListResponse,
     ProjectCreateResponse,
@@ -32,11 +36,12 @@ from core.config import (
     ensure_project_dirs,
     get_images_dir,
     get_inference_dir,
+    get_models_dir,
     get_output_dir,
     get_project_dir,
 )
 from core.database import get_db
-from core.models import ImageRecord, Project, User
+from core.models import ImageRecord, ModelRecord, Project, User
 from core.file_utils import extract_images_from_zip
 from core.export_logic import BoundingBox, save_annotations, load_yolo_annotations, get_index_to_label_map
 
@@ -331,3 +336,170 @@ def export_project_dataset(
         import shutil
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"Export failed: {exc}")
+
+
+@router.delete("/{project_id}/images/{filename}")
+def delete_project_image(
+    project_id: int,
+    filename: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    get_project_or_404(db, project_id, current_user.id)
+    
+    images_dir = get_images_dir(project_id)
+    inference_dir = get_inference_dir(project_id)
+    output_dir = get_output_dir(project_id)
+    
+    image_path = images_dir / filename
+    resolved_image = image_path.resolve()
+    
+    if not resolved_image.is_file():
+        raise HTTPException(status_code=404, detail="Image not found.")
+        
+    resolved_image.unlink()
+    
+    base_name = Path(filename).stem
+    
+    yolo_path = inference_dir / f"{base_name}.txt"
+    if yolo_path.exists():
+        yolo_path.unlink()
+        
+    xml_path = output_dir / f"{base_name}.xml"
+    if xml_path.exists():
+        xml_path.unlink()
+        
+    record = db.query(ImageRecord).filter(ImageRecord.project_id == project_id, ImageRecord.filename == filename).first()
+    if record:
+        db.delete(record)
+        db.commit()
+        
+    return {"message": f"Image {filename} deleted successfully."}
+
+
+# ---------------------------------------------------------------------------
+# Feature F: Model Upload & AI Auto-Labeling
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{project_id}/models", status_code=201)
+async def upload_model(
+    project_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Upload a YOLO .pt model file to a project."""
+    get_project_or_404(db, project_id, current_user.id)
+
+    if not file.filename or not file.filename.lower().endswith(".pt"):
+        raise HTTPException(status_code=400, detail="Only .pt model files are accepted.")
+
+    models_dir = get_models_dir(project_id)
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    model_path = models_dir / file.filename
+
+    try:
+        with open(model_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                f.write(chunk)
+    except Exception as exc:
+        logger.exception("Error saving model file")
+        raise HTTPException(status_code=500, detail=f"Failed to save model: {exc}") from exc
+
+    logger.info(
+        "[project %d] Uploaded model '%s' (%d bytes)",
+        project_id, file.filename, model_path.stat().st_size,
+    )
+
+    # Persist metadata to the database
+    record = ModelRecord(
+        project_id=project_id,
+        name=file.filename,
+        file_path=str(model_path),
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+
+    return {
+        "message": f"Model '{file.filename}' uploaded successfully.",
+        "model_name": file.filename,
+        "id": record.id,
+        "uploaded_at": record.uploaded_at.isoformat(),
+    }
+
+
+@router.get("/{project_id}/models")
+def list_project_models(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return all model records for a given project, ordered newest first."""
+    get_project_or_404(db, project_id, current_user.id)
+
+    records = (
+        db.query(ModelRecord)
+        .filter(ModelRecord.project_id == project_id)
+        .order_by(ModelRecord.uploaded_at.desc())
+        .all()
+    )
+
+    return {
+        "models": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "file_path": r.file_path,
+                "uploaded_at": r.uploaded_at.isoformat(),
+            }
+            for r in records
+        ]
+    }
+
+
+@router.post(
+    "/{project_id}/images/{filename}/auto-label",
+    response_model=AutoLabelResponse,
+)
+def auto_label_image(
+    project_id: int,
+    filename: str,
+    payload: AutoLabelRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Run YOLO inference on a single image and merge results with existing annotations."""
+    get_project_or_404(db, project_id, current_user.id)
+
+    from core.inference_service import run_auto_labeling
+
+    try:
+        result = run_auto_labeling(
+            project_id=project_id,
+            filename=filename,
+            model_name=payload.model_name,
+            db=db,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Auto-labeling failed for '%s'", filename)
+        raise HTTPException(status_code=500, detail=f"Auto-labeling failed: {exc}") from exc
+
+    # Mark image as annotated
+    record = db.query(ImageRecord).filter(
+        ImageRecord.project_id == project_id,
+        ImageRecord.filename == filename,
+    ).first()
+    if record and result["boxes_added"] > 0:
+        record.status = "done"
+        db.commit()
+
+    return AutoLabelResponse(
+        message=f"Auto-labeling completed for {filename}.",
+        boxes_added=result["boxes_added"],
+        classes_created=result["classes_created"],
+    )

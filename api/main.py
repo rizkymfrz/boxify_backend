@@ -21,6 +21,7 @@ from core.database import engine
 from core import models
 from api.router_auth import router as auth_router
 from api.router_projects import router as projects_router
+from api.router_classes import router as classes_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -74,5 +75,6 @@ def on_startup():
 # ---------------------------------------------------------------------------
 app.include_router(auth_router)
 app.include_router(projects_router)
+app.include_router(classes_router)
 
 

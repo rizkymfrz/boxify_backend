@@ -239,6 +239,217 @@ def get_index_to_label_map(classes_file: Path | None = None) -> dict[int, str]:
     return {v: k for k, v in label_map.items()}
 
 
+# ---------------------------------------------------------------------------
+# Project-Scoped Class Management Helpers
+# ---------------------------------------------------------------------------
+
+
+def sync_classes_txt(project_id: int, classes: list) -> None:
+    """
+    Recreate ``classes.txt`` for *project_id* from the canonical list of
+    ``ProjectClass`` ORM objects sorted by their DB ``id`` (ascending).
+
+    The 0-based array position of each class in this sorted list is the
+    YOLO class index written into the ``.txt`` annotation files.
+
+    Args:
+        project_id: The target project.
+        classes:    An ordered (by id ASC) iterable of ProjectClass ORM rows.
+    """
+    from core.config import get_project_dir
+
+    classes_file = get_project_dir(project_id) / "classes.txt"
+    classes_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(classes_file, "w", encoding="utf-8") as f:
+        for cls in classes:
+            f.write(f"{cls.name}\n")
+
+    logger.info(
+        "[project %d] Synced classes.txt → %d class(es): %s",
+        project_id,
+        len(classes),
+        [c.name for c in classes],
+    )
+
+
+def rename_class_in_xmls(project_id: int, old_name: str, new_name: str) -> int:
+    """
+    Walk every ``.xml`` file in the project's ``output/`` directory and
+    replace every ``<name>`` text node equal to *old_name* with *new_name*.
+
+    Returns:
+        Number of XML files that were modified.
+    """
+    from core.config import get_output_dir
+
+    output_dir = get_output_dir(project_id)
+    if not output_dir.exists():
+        logger.info("[project %d] No output/ dir — rename_class_in_xmls is a no-op.", project_id)
+        return 0
+
+    modified = 0
+    for xml_file in sorted(output_dir.glob("*.xml")):
+        try:
+            tree = ET.parse(xml_file)
+            root = tree.getroot()
+            changed = False
+
+            for obj in root.findall("object"):
+                name_el = obj.find("name")
+                if name_el is not None and name_el.text == old_name:
+                    name_el.text = new_name
+                    changed = True
+
+            if changed:
+                # Overwrite atomically via a temp-then-replace pattern
+                tmp = xml_file.with_suffix(".xml.tmp")
+                tree.write(tmp, encoding="utf-8", xml_declaration=True)
+                tmp.replace(xml_file)
+                modified += 1
+                logger.debug("[project %d] Renamed '%s'→'%s' in %s", project_id, old_name, new_name, xml_file.name)
+
+        except ET.ParseError:
+            logger.warning("[project %d] Skipping malformed XML: %s", project_id, xml_file.name)
+
+    logger.info(
+        "[project %d] rename_class_in_xmls: '%s'→'%s' in %d file(s).",
+        project_id, old_name, new_name, modified,
+    )
+    return modified
+
+
+def delete_class_and_reindex(
+    project_id: int,
+    class_name_to_delete: str,
+    deleted_class_index: int,
+) -> dict[str, int]:
+    """
+    Purge & Re-Index pipeline — three-phase operation:
+
+    Phase 1 — XML Purge
+        Remove every ``<object>`` whose ``<name>`` matches *class_name_to_delete*
+        from all ``.xml`` files in ``output/``. An empty ``<annotation>`` is kept
+        so the image acts as a YOLO background-training sample.
+
+    Phase 2 — YOLO TXT Re-Index
+        For each ``.txt`` file in ``inference/``:
+        * Lines whose class index == *deleted_class_index* are dropped.
+        * Lines whose class index >  *deleted_class_index* are decremented by 1.
+        Empty files are kept (YOLO background images).
+
+    Args:
+        project_id:            Target project.
+        class_name_to_delete:  The human-readable class name to purge.
+        deleted_class_index:   The 0-based YOLO index of the class being deleted.
+
+    Returns:
+        A dict with keys ``xmls_modified`` and ``txts_modified`` for logging.
+    """
+    from core.config import get_output_dir, get_inference_dir
+
+    stats = {"xmls_modified": 0, "txts_modified": 0}
+
+    # ------------------------------------------------------------------ #
+    # Phase 1: XML Purge                                                   #
+    # ------------------------------------------------------------------ #
+    output_dir = get_output_dir(project_id)
+    if output_dir.exists():
+        for xml_file in sorted(output_dir.glob("*.xml")):
+            try:
+                tree = ET.parse(xml_file)
+                root = tree.getroot()
+
+                # Collect objects to remove *before* mutating the tree
+                to_remove = [
+                    obj for obj in root.findall("object")
+                    if (name_el := obj.find("name")) is not None
+                    and name_el.text == class_name_to_delete
+                ]
+
+                if to_remove:
+                    for obj in to_remove:
+                        root.remove(obj)
+
+                    tmp = xml_file.with_suffix(".xml.tmp")
+                    tree.write(tmp, encoding="utf-8", xml_declaration=True)
+                    tmp.replace(xml_file)
+                    stats["xmls_modified"] += 1
+                    logger.debug(
+                        "[project %d] Purged %d object(s) from %s",
+                        project_id, len(to_remove), xml_file.name,
+                    )
+
+            except ET.ParseError:
+                logger.warning("[project %d] Skipping malformed XML: %s", project_id, xml_file.name)
+    else:
+        logger.info("[project %d] No output/ dir — XML purge is a no-op.", project_id)
+
+    # ------------------------------------------------------------------ #
+    # Phase 2: YOLO TXT Re-Index                                           #
+    # ------------------------------------------------------------------ #
+    inference_dir = get_inference_dir(project_id)
+    if inference_dir.exists():
+        for txt_file in sorted(inference_dir.glob("*.txt")):
+            try:
+                with open(txt_file, "r", encoding="utf-8") as f:
+                    original_lines = f.readlines()
+
+                new_lines: list[str] = []
+                changed = False
+
+                for line in original_lines:
+                    stripped = line.strip()
+                    if not stripped:          # preserve blank lines (empty annotations)
+                        new_lines.append(line)
+                        continue
+
+                    parts = stripped.split()
+                    try:
+                        class_idx = int(parts[0])
+                    except (ValueError, IndexError):
+                        # Malformed line — keep as-is
+                        new_lines.append(line)
+                        continue
+
+                    if class_idx == deleted_class_index:
+                        # Drop this annotation entirely
+                        changed = True
+                        continue
+                    elif class_idx > deleted_class_index:
+                        # Decrement the index by 1
+                        parts[0] = str(class_idx - 1)
+                        new_lines.append(" ".join(parts) + "\n")
+                        changed = True
+                    else:
+                        new_lines.append(line)
+
+                if changed:
+                    with open(txt_file, "w", encoding="utf-8") as f:
+                        f.writelines(new_lines)
+                    stats["txts_modified"] += 1
+                    logger.debug(
+                        "[project %d] Re-indexed %s (deleted idx=%d)",
+                        project_id, txt_file.name, deleted_class_index,
+                    )
+
+            except OSError:
+                logger.warning("[project %d] Could not process %s", project_id, txt_file.name)
+    else:
+        logger.info("[project %d] No inference/ dir — TXT re-index is a no-op.", project_id)
+
+    logger.info(
+        "[project %d] Purge complete — deleted='%s' (idx=%d) | "
+        "xmls_modified=%d txts_modified=%d",
+        project_id,
+        class_name_to_delete,
+        deleted_class_index,
+        stats["xmls_modified"],
+        stats["txts_modified"],
+    )
+    return stats
+
+
 def load_yolo_annotations(
     yolo_file_path: Path,
     image_width: int,

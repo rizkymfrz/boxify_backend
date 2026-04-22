@@ -1,7 +1,0 @@
-dog
-cat
-bird
-Person
-Bicycle
-Traffic Light
-Bus

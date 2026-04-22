@@ -7,7 +7,7 @@ using Pydantic v2.
 """
 
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +58,48 @@ class ProjectListItem(BaseModel):
 class ProjectListResponse(BaseModel):
     """Response for listing all user projects."""
     projects: list[ProjectListItem]
+
+
+# ---------------------------------------------------------------------------
+# Class Management Schemas
+# ---------------------------------------------------------------------------
+
+class ClassCreate(BaseModel):
+    """Payload for creating a new project class."""
+    name: str = Field(..., min_length=1, max_length=100, examples=["person"])
+    color: str = Field(
+        default="#ef4444",
+        pattern=r"^#[0-9a-fA-F]{6}$",
+        description="Hex colour string, e.g. '#ef4444'. Defaults to Tailwind red.",
+        examples=["#ef4444"],
+    )
+
+
+class ClassUpdate(BaseModel):
+    """Payload for renaming or recolouring a class. All fields are optional."""
+    name: str | None = Field(default=None, min_length=1, max_length=100, examples=["vehicle"])
+    color: str | None = Field(
+        default=None,
+        pattern=r"^#[0-9a-fA-F]{6}$",
+        examples=["#3b82f6"],
+    )
+
+
+class ClassResponse(BaseModel):
+    """A single class in the API response."""
+    id: int
+    project_id: int
+    name: str
+    color: str
+    yolo_index: int = Field(..., description="0-based YOLO class index (position in id-sorted list).")
+
+    class Config:
+        from_attributes = True
+
+
+class ClassListResponse(BaseModel):
+    """Response for listing all classes within a project."""
+    classes: list[ClassResponse]
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +261,44 @@ class ExportResponse(BaseModel):
         ...,
         description="Name of the exported zip file.",
         examples=["default_project.zip"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Feature F: AI Auto-Labeling
+# ---------------------------------------------------------------------------
+
+class AutoLabelRequest(BaseModel):
+    """Payload for triggering AI auto-labeling on a single image."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_name: str = Field(
+        ...,
+        min_length=1,
+        description="The filename of the YOLO .pt model to use for inference.",
+        examples=["yolov8n.pt"],
+    )
+
+
+class AutoLabelResponse(BaseModel):
+    """Response returned after auto-labeling completes."""
+
+    message: str = Field(
+        ...,
+        description="Human-readable success message.",
+        examples=["Auto-labeling completed successfully."],
+    )
+    boxes_added: int = Field(
+        ...,
+        ge=0,
+        description="Number of new bounding boxes added by the AI model.",
+        examples=[12],
+    )
+    classes_created: list[str] = Field(
+        default_factory=list,
+        description="Names of any new classes that were auto-created.",
+        examples=[["person", "car"]],
     )
 
 

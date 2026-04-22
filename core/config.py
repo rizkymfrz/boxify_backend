@@ -36,6 +36,9 @@ def get_output_dir(project_id: int) -> Path:
 def get_inference_dir(project_id: int) -> Path:
     return get_project_dir(project_id) / "inference"
 
+def get_models_dir(project_id: int) -> Path:
+    return get_project_dir(project_id) / "models"
+
 def get_classes_file(project_id: int) -> Path:
     return get_project_dir(project_id) / "classes.txt"
 
@@ -44,6 +47,7 @@ def ensure_project_dirs(project_id: int) -> None:
     get_images_dir(project_id).mkdir(parents=True, exist_ok=True)
     get_output_dir(project_id).mkdir(parents=True, exist_ok=True)
     get_inference_dir(project_id).mkdir(parents=True, exist_ok=True)
+    get_models_dir(project_id).mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Legacy default project (kept for backward compatibility / standalone mode)
