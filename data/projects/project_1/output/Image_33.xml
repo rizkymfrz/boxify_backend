@@ -1,0 +1,27 @@
+<?xml version="1.0" ?>
+<annotation>
+  <folder>default_project</folder>
+  <filename>Image_33.JPG</filename>
+  <object>
+    <name>Bus</name>
+    <type>polygon</type>
+    <polygon>
+      <point>
+        <x>71</x>
+        <y>127</y>
+      </point>
+      <point>
+        <x>2346</x>
+        <y>127</y>
+      </point>
+      <point>
+        <x>2346</x>
+        <y>1536</y>
+      </point>
+      <point>
+        <x>71</x>
+        <y>1536</y>
+      </point>
+    </polygon>
+  </object>
+</annotation>
