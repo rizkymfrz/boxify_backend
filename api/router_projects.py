@@ -167,8 +167,12 @@ def list_project_images(
         for f in sorted(images_dir.iterdir()):
             if f.is_file() and f.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS:
                 base_name = f.stem
-                has_annotation = (inference_dir / f"{base_name}.txt").exists()
-                images_data.append(ImageItem(filename=f.name, has_annotation=has_annotation))
+                txt_path = inference_dir / f"{base_name}.txt"
+                annotation_count = 0
+                if txt_path.exists():
+                    with open(txt_path, "r", encoding="utf-8") as txt_f:
+                        annotation_count = sum(1 for line in txt_f if line.strip())
+                images_data.append(ImageItem(filename=f.name, annotation_count=annotation_count))
 
     return ImageListResponse(images=images_data)
 

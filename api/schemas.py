@@ -127,17 +127,18 @@ class UploadResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ImageItem(BaseModel):
-    """Detailed image info including annotation status."""
-    
+    """Detailed image info including annotation count."""
+
     filename: str = Field(
         ...,
         description="Image filename.",
         examples=["img_001.jpg"],
     )
-    has_annotation: bool = Field(
-        ...,
-        description="True if an annotation file exists for this image.",
-        examples=[True],
+    annotation_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of bounding box annotations for this image (lines in the YOLO .txt file).",
+        examples=[3],
     )
 
 class ImageListResponse(BaseModel):

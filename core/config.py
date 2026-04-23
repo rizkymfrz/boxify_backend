@@ -1,27 +1,54 @@
 """
 Boxify Backend — Configuration Settings
 
-Centralizes all path constants and configuration values used across
-the backend. All paths are resolved relative to the backend/ directory
-to ensure consistent behavior regardless of the working directory.
+Centralizes ALL configuration values used across the backend.
+Values are loaded from a `.env` file (via python-dotenv) with sensible
+defaults so the app works out-of-the-box for local development.
+
+Usage in other modules:
+    from core.config import DATABASE_URL, JWT_SECRET_KEY, ...
 """
 
+import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # ---------------------------------------------------------------------------
-# Base Paths
+# Load .env file (auto-discover from backend/ root)
 # ---------------------------------------------------------------------------
-# Resolve the project root as the parent of this file's directory (core/)
-# i.e., backend/
 BASE_DIR = Path(__file__).resolve().parent.parent
-
-# Data storage root
-DATA_DIR = BASE_DIR / "data"
-PROJECTS_DIR = DATA_DIR / "projects"
+_env_path = BASE_DIR / ".env"
+load_dotenv(_env_path)
 
 # ---------------------------------------------------------------------------
-# Project-Aware Path Helpers
+# Database
 # ---------------------------------------------------------------------------
+DATABASE_URL: str = os.getenv(
+    "MYSQL_URL",
+    "mysql+pymysql://samtek_user:samtek123@localhost:3306/boxify",
+)
+
+# ---------------------------------------------------------------------------
+# JWT Authentication
+# ---------------------------------------------------------------------------
+JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "boxify-dev-secret-change-in-production")
+JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))  # 24 h
+
+# ---------------------------------------------------------------------------
+# File Storage Paths
+# ---------------------------------------------------------------------------
+_projects_dir_raw = os.getenv("PROJECTS_DIR", "")
+if _projects_dir_raw:
+    # Support both absolute and relative paths
+    _p = Path(_projects_dir_raw)
+    PROJECTS_DIR = _p if _p.is_absolute() else (BASE_DIR / _p).resolve()
+else:
+    PROJECTS_DIR = BASE_DIR / "data" / "projects"
+
+DATA_DIR = PROJECTS_DIR.parent  # kept for backward-compat
+
 
 def get_project_dir(project_id: int) -> Path:
     """Return the root directory for a given project."""
@@ -61,18 +88,28 @@ CLASSES_FILE = DEFAULT_PROJECT_DIR / "classes.txt"
 # ---------------------------------------------------------------------------
 # Upload Constraints
 # ---------------------------------------------------------------------------
-# Maximum upload size in bytes (500 MB)
-MAX_UPLOAD_SIZE_BYTES: int = 500 * 1024 * 1024  # 524_288_000
+MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "500"))
+MAX_UPLOAD_SIZE_BYTES: int = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
 # Supported image file extensions (lowercase)
 SUPPORTED_IMAGE_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png"}
 
 # ---------------------------------------------------------------------------
-# CORS Settings (permissive for MVP)
+# CORS Settings
 # ---------------------------------------------------------------------------
-CORS_ALLOW_ORIGINS: list[str] = ["*"]
-CORS_ALLOW_METHODS: list[str] = ["*"]
-CORS_ALLOW_HEADERS: list[str] = ["*"]
+def _parse_csv(value: str) -> list[str]:
+    """Parse a comma-separated env var into a list."""
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+CORS_ALLOW_ORIGINS: list[str] = _parse_csv(os.getenv("CORS_ALLOW_ORIGINS", "*"))
+CORS_ALLOW_METHODS: list[str] = _parse_csv(os.getenv("CORS_ALLOW_METHODS", "*"))
+CORS_ALLOW_HEADERS: list[str] = _parse_csv(os.getenv("CORS_ALLOW_HEADERS", "*"))
+
+# ---------------------------------------------------------------------------
+# Server
+# ---------------------------------------------------------------------------
+APP_HOST: str = os.getenv("APP_HOST", "0.0.0.0")
+APP_PORT: int = int(os.getenv("APP_PORT", "8000"))
 
 # ---------------------------------------------------------------------------
 # Ensure required directories exist at import time
