@@ -87,7 +87,7 @@ def register_labels(labels: list[str], classes_file: Path | None = None) -> dict
 
 
 class BoundingBox:
-    __slots__ = ("x", "y", "width", "height", "label")
+    __slots__ = ("x", "y", "width", "height", "label", "type", "points")
 
     def __init__(
         self,
@@ -96,12 +96,16 @@ class BoundingBox:
         width: float,
         height: float,
         label: str,
+        type: str = "bbox",
+        points: list[dict[str, float]] | None = None,
     ) -> None:
         self.x = x
         self.y = y
         self.width = width
         self.height = height
         self.label = label
+        self.type = type
+        self.points = points
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +124,17 @@ def convert_to_yolo(
         raise ValueError(f"Image dimensions must be positive.")
 
     class_index = label_to_index[bbox.label]
+    
+    if bbox.type == "polygon" and bbox.points:
+        # YOLO segmentation format: <class> <x1> <y1> <x2> <y2> ...
+        coords = []
+        for p in bbox.points:
+            # Handle both dict and object-like access for robustness
+            px = p["x"] if isinstance(p, dict) else getattr(p, "x")
+            py = p["y"] if isinstance(p, dict) else getattr(p, "y")
+            coords.append(f"{max(0.0, min(1.0, px)):.6f}")
+            coords.append(f"{max(0.0, min(1.0, py)):.6f}")
+        return f"{class_index} {' '.join(coords)}"
 
     x_center = (bbox.x + bbox.width / 2.0) / image_width
     y_center = (bbox.y + bbox.height / 2.0) / image_height
@@ -134,8 +149,13 @@ def convert_to_yolo(
     return f"{class_index} {x_center:.6f} {y_center:.6f} {norm_width:.6f} {norm_height:.6f}"
 
 
-def convert_to_xml_polygon(bboxes: list[BoundingBox], image_filename: str) -> str:
-    """Convert to custom XML format with a 4-point polygon representation."""
+def convert_to_xml(
+    bboxes: list[BoundingBox], 
+    image_filename: str,
+    image_width: int,
+    image_height: int,
+) -> str:
+    """Convert to Pascal VOC XML format with polygon support."""
     annotation = ET.Element("annotation")
 
     # Add some basic metadata
@@ -145,6 +165,12 @@ def convert_to_xml_polygon(bboxes: list[BoundingBox], image_filename: str) -> st
     filename_elem = ET.SubElement(annotation, "filename")
     filename_elem.text = image_filename
 
+    # Image size metadata
+    size_elem = ET.SubElement(annotation, "size")
+    ET.SubElement(size_elem, "width").text = str(image_width)
+    ET.SubElement(size_elem, "height").text = str(image_height)
+    ET.SubElement(size_elem, "depth").text = "3"
+
     for bbox in bboxes:
         obj = ET.SubElement(annotation, "object")
 
@@ -152,29 +178,29 @@ def convert_to_xml_polygon(bboxes: list[BoundingBox], image_filename: str) -> st
         name.text = bbox.label
 
         type_elem = ET.SubElement(obj, "type")
-        type_elem.text = "polygon"
+        type_elem.text = bbox.type
 
-        polygon = ET.SubElement(obj, "polygon")
-
-        # Top-Left (x, y)
-        p1 = ET.SubElement(polygon, "point")
-        ET.SubElement(p1, "x").text = str(int(round(bbox.x)))
-        ET.SubElement(p1, "y").text = str(int(round(bbox.y)))
-
-        # Top-Right (x + width, y)
-        p2 = ET.SubElement(polygon, "point")
-        ET.SubElement(p2, "x").text = str(int(round(bbox.x + bbox.width)))
-        ET.SubElement(p2, "y").text = str(int(round(bbox.y)))
-
-        # Bottom-Right (x + width, y + height)
-        p3 = ET.SubElement(polygon, "point")
-        ET.SubElement(p3, "x").text = str(int(round(bbox.x + bbox.width)))
-        ET.SubElement(p3, "y").text = str(int(round(bbox.y + bbox.height)))
-
-        # Bottom-Left (x, y + height)
-        p4 = ET.SubElement(polygon, "point")
-        ET.SubElement(p4, "x").text = str(int(round(bbox.x)))
-        ET.SubElement(p4, "y").text = str(int(round(bbox.y + bbox.height)))
+        if bbox.type == "polygon" and bbox.points:
+            # True polygon: un-normalize each point back to absolute pixels
+            # Format: <polygon><x1>..</x1><y1>..</y1>...</polygon>
+            polygon_elem = ET.SubElement(obj, "polygon")
+            for i, p in enumerate(bbox.points, 1):
+                # Handle both dict and object-like access for robustness
+                px = p["x"] if isinstance(p, dict) else getattr(p, "x")
+                py = p["y"] if isinstance(p, dict) else getattr(p, "y")
+                
+                abs_x = int(round(px * image_width))
+                abs_y = int(round(py * image_height))
+                
+                ET.SubElement(polygon_elem, f"x{i}").text = str(abs_x)
+                ET.SubElement(polygon_elem, f"y{i}").text = str(abs_y)
+        else:
+            # Standard BBox: <bndbox><xmin>..</xmin>...
+            bndbox = ET.SubElement(obj, "bndbox")
+            ET.SubElement(bndbox, "xmin").text = str(int(round(bbox.x)))
+            ET.SubElement(bndbox, "ymin").text = str(int(round(bbox.y)))
+            ET.SubElement(bndbox, "xmax").text = str(int(round(bbox.x + bbox.width)))
+            ET.SubElement(bndbox, "ymax").text = str(int(round(bbox.y + bbox.height)))
 
     # Pretty print the XML
     xml_str = ET.tostring(annotation, encoding="utf-8")
@@ -218,7 +244,9 @@ def save_annotations(
             f.write("\n")
 
     # 3. Generate and save Custom XML (.xml)
-    xml_content = convert_to_xml_polygon(bboxes, image_filename)
+    xml_content = convert_to_xml(
+        bboxes, image_filename, image_width, image_height
+    )
     xml_output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(xml_output_path, "w", encoding="utf-8") as f:
         f.write(xml_content)
@@ -467,8 +495,14 @@ def load_yolo_annotations(
     with open(yolo_file_path, "r", encoding="utf-8") as f:
         for line in f:
             parts = line.strip().split()
+            if not parts:
+                continue
+                
+            class_index = int(parts[0])
+            label = index_to_label.get(class_index, f"class_{class_index}")
+            
+            # Case 1: Standard YOLO BBox (5 values)
             if len(parts) == 5:
-                class_index = int(parts[0])
                 x_center = float(parts[1])
                 y_center = float(parts[2])
                 norm_width = float(parts[3])
@@ -479,12 +513,38 @@ def load_yolo_annotations(
                 abs_x = (x_center * image_width) - (abs_width / 2.0)
                 abs_y = (y_center * image_height) - (abs_height / 2.0)
 
-                label = index_to_label.get(class_index, f"class_{class_index}")
                 bboxes.append(BoundingBox(
                     x=abs_x,
                     y=abs_y,
                     width=abs_width,
                     height=abs_height,
-                    label=label
+                    label=label,
+                    type="bbox"
                 ))
+            
+            # Case 2: YOLO Segmentation / Polygon (> 5 values, must be even # of coords)
+            elif len(parts) > 5 and (len(parts) - 1) % 2 == 0:
+                normalized_points = []
+                for i in range(1, len(parts), 2):
+                    normalized_points.append({
+                        "x": float(parts[i]),
+                        "y": float(parts[i+1])
+                    })
+                
+                # Calculate bounding box from points for UI compatibility
+                if normalized_points:
+                    xs = [p["x"] * image_width for p in normalized_points]
+                    ys = [p["y"] * image_height for p in normalized_points]
+                    min_x, max_x = min(xs), max(xs)
+                    min_y, max_y = min(ys), max(ys)
+                    
+                    bboxes.append(BoundingBox(
+                        x=min_x,
+                        y=min_y,
+                        width=max_x - min_x,
+                        height=max_y - min_y,
+                        label=label,
+                        type="polygon",
+                        points=normalized_points
+                    ))
     return bboxes

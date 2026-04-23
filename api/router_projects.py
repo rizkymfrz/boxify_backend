@@ -232,7 +232,15 @@ def get_project_annotation(
     bboxes = load_yolo_annotations(yolo_path, img_width, img_height, index_to_label)
     
     boxes_out = [
-        {"x": bbox.x, "y": bbox.y, "width": bbox.width, "height": bbox.height, "label": bbox.label}
+        {
+            "x": bbox.x,
+            "y": bbox.y,
+            "width": bbox.width,
+            "height": bbox.height,
+            "label": bbox.label,
+            "type": bbox.type,
+            "points": bbox.points
+        }
         for bbox in bboxes
     ]
 
@@ -265,7 +273,15 @@ def save_project_annotation(
     classes_file = get_project_dir(project_id) / "classes.txt"
 
     bboxes = [
-        BoundingBox(x=box.x, y=box.y, width=box.width, height=box.height, label=box.label)
+        BoundingBox(
+            x=box.x,
+            y=box.y,
+            width=box.width,
+            height=box.height,
+            label=box.label,
+            type=box.type,
+            points=[{"x": p.x, "y": p.y} for p in box.points] if box.points else None
+        )
         for box in payload.boxes
     ]
 

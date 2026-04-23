@@ -167,6 +167,7 @@ def run_auto_labeling(
 
             new_bboxes.append(BoundingBox(
                 x=abs_x, y=abs_y, width=abs_w, height=abs_h, label=final_class_name,
+                type="bbox"
             ))
 
     # ------------------------------------------------------------------

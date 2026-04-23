@@ -154,10 +154,15 @@ class ImageListResponse(BaseModel):
 # Feature C: Save Annotation
 # ---------------------------------------------------------------------------
 
+class Point(BaseModel):
+    """A single normalized [0-1] coordinate point."""
+    x: float
+    y: float
+
 class BoundingBoxSchema(BaseModel):
     """
-    A single bounding box in absolute pixel coordinates as sent
-    by the React-Konva frontend.
+    A single bounding box or polygon annotation.
+    BBoxes are in absolute pixels; Polygons are in normalized [0-1] coordinates.
     """
 
     x: float = Field(
@@ -185,8 +190,18 @@ class BoundingBoxSchema(BaseModel):
     label: str = Field(
         ...,
         min_length=1,
-        description="Class label for this bounding box (e.g., 'person', 'car').",
+        description="Class label for this annotation (e.g., 'person', 'car').",
         examples=["person"],
+    )
+    type: str = Field(
+        default="bbox",
+        description="Annotation type: 'bbox' or 'polygon'.",
+        examples=["polygon"],
+    )
+    points: list[Point] | None = Field(
+        default=None,
+        description="Normalized [0-1] coordinates for polygon vertices. Only for type='polygon'.",
+        examples=[[{"x": 0.5, "y": 0.5}, {"x": 0.6, "y": 0.6}, {"x": 0.5, "y": 0.6}]],
     )
 
 
