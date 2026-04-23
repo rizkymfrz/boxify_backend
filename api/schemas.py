@@ -226,6 +226,10 @@ class AnnotationRequest(BaseModel):
         description="Height of the source image in pixels.",
         examples=[1080],
     )
+    filename: str | None = Field(
+        default=None,
+        description="The filename of the image being annotated (used for validation).",
+    )
     boxes: list[BoundingBoxSchema] = Field(
         default_factory=list,
         description=(

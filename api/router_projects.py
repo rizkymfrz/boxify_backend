@@ -244,7 +244,12 @@ def get_project_annotation(
         for bbox in bboxes
     ]
 
-    return AnnotationRequest(image_width=img_width, image_height=img_height, boxes=boxes_out)
+    return AnnotationRequest(
+        image_width=img_width,
+        image_height=img_height,
+        filename=filename,
+        boxes=boxes_out,
+    )
 
 
 @router.post("/{project_id}/annotations/{filename}", response_model=AnnotationResponse)

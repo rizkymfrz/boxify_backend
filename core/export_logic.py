@@ -238,18 +238,22 @@ def save_annotations(
             raise
 
     yolo_output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(yolo_output_path, "w", encoding="utf-8") as f:
+    tmp_yolo = yolo_output_path.with_suffix(".txt.tmp")
+    with open(tmp_yolo, "w", encoding="utf-8") as f:
         f.write("\n".join(yolo_lines))
         if yolo_lines:
             f.write("\n")
+    tmp_yolo.replace(yolo_output_path)
 
     # 3. Generate and save Custom XML (.xml)
     xml_content = convert_to_xml(
         bboxes, image_filename, image_width, image_height
     )
     xml_output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(xml_output_path, "w", encoding="utf-8") as f:
+    tmp_xml = xml_output_path.with_suffix(".xml.tmp")
+    with open(tmp_xml, "w", encoding="utf-8") as f:
         f.write(xml_content)
+    tmp_xml.replace(xml_output_path)
 
     logger.info(
         "Saved %d annotation(s) to %s AND %s",
